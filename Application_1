@@ -1,14 +1,23 @@
-import React, { useCallback, useMemo, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
-import { GripVertical, Trash2, Plus, Pencil } from "lucide-react";
-import { DndContext, closestCenter } from '@dnd-kit/core';
-import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import React, { useCallback, useMemo, useState, useEffect, useRef, createContext, useContext } from "react";
+import { Plus, Trash2, Pencil, Save, Moon, Sun, ChevronUp, ChevronDown, Music, Pause, Play } from "lucide-react";
+import _ from "lodash";
 
-const quotes = [
+// Create ThemeContext
+const ThemeContext = createContext({
+  isDarkMode: false,
+  toggleTheme: () => {},
+});
+
+// Spotify context for managing music state
+const SpotifyContext = createContext({
+  isPlaying: false,
+  currentPlaylist: null,
+  togglePlayback: () => {},
+  setCurrentPlaylist: () => {},
+});
+
+// Moved outside component to prevent recreation
+const QUOTES = [
   "Consistency is the key to success.",
   "Small steps every day lead to big results.",
   "Discipline is choosing between what you want now and what you want most.",
@@ -17,161 +26,731 @@ const quotes = [
   "Your future is created by what you do today."
 ];
 
-const generateHabits = (count) =>
-  Array.from({ length: count }, (_, i) => ({ id: crypto.randomUUID(), name: `Habit ${i + 1}`, done: false }));
+// Default playlists
+const DEFAULT_PLAYLISTS = [
+  { id: "focus1", name: "Deep Focus", url: "spotify:playlist:37i9dQZF1DX3PFzdbtx1Us" },
+  { id: "focus2", name: "Instrumental Study", url: "spotify:playlist:37i9dQZF1DX8NTLI2TtZa6" },
+  { id: "focus3", name: "Lo-Fi Beats", url: "spotify:playlist:37i9dQZF1DWWQRwui0ExPn" },
+  { id: "focus4", name: "Piano Focus", url: "spotify:playlist:37i9dQZF1DX4sWSpwq3LiO" }
+];
 
-const SortableHabitItem = React.memo(({ habit, toggleHabit, deleteHabit, updateHabitName, quote }) => {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: habit.id });
-
-  const style = useMemo(() => ({
-    transform: CSS.Transform.toString(transform),
-    transition,
-  }), [transform, transition]);
-
-  const [isEditing, setIsEditing] = useState(false);
-  const [tempName, setTempName] = useState(habit.name);
-
-  const handleEdit = () => {
-    if (isEditing && tempName.trim()) {
-      updateHabitName(habit.id, tempName);
+// Custom hook for persistent storage
+const useLocalStorage = (key, initialValue) => {
+  // Lazy initialize to only run on first render
+  const [storedValue, setStoredValue] = useState(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const item = window.localStorage.getItem(key);
+        return item ? JSON.parse(item) : initialValue;
+      }
+      return initialValue;
+    } catch (error) {
+      console.error("Error reading from localStorage:", error);
+      return initialValue;
     }
-    setIsEditing(!isEditing);
+  });
+
+  // Update localStorage when state changes
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(key, JSON.stringify(storedValue));
+      }
+    } catch (error) {
+      console.error("Error writing to localStorage:", error);
+    }
+  }, [key, storedValue]);
+
+  return [storedValue, setStoredValue];
+};
+
+// Generate habits with improved randomness
+const generateHabits = (count) =>
+  Array.from({ length: count }, (_, i) => ({ 
+    id: `habit-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
+    name: `Habit ${i + 1}`, 
+    done: false,
+    streak: 0,
+    lastCompleted: null,
+    priority: i,
+  }));
+
+// ThemeProvider component
+const ThemeProvider = ({ children }) => {
+  // Auto-detect initial theme based on time of day
+  const initialTheme = () => {
+    const hour = new Date().getHours();
+    // Dark mode between 7PM and 7AM
+    return (hour >= 19 || hour < 7);
+  };
+  
+  const [isDarkMode, setIsDarkMode] = useLocalStorage('darkMode', initialTheme());
+  
+  const toggleTheme = useCallback(() => {
+    setIsDarkMode(prev => !prev);
+  }, [setIsDarkMode]);
+  
+  // Apply theme to document body
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.body.classList.toggle('dark', isDarkMode);
+      if (isDarkMode) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    }
+  }, [isDarkMode]);
+  
+  const value = useMemo(() => ({
+    isDarkMode,
+    toggleTheme
+  }), [isDarkMode, toggleTheme]);
+  
+  return (
+    <ThemeContext.Provider value={value}>
+      {children}
+    </ThemeContext.Provider>
+  );
+};
+
+// SpotifyProvider component
+const SpotifyProvider = ({ children }) => {
+  const [isPlaying, setIsPlaying] = useLocalStorage('spotifyIsPlaying', false);
+  const [currentPlaylist, setCurrentPlaylist] = useLocalStorage('spotifyCurrentPlaylist', null);
+  const [userPlaylists, setUserPlaylists] = useLocalStorage('spotifyUserPlaylists', DEFAULT_PLAYLISTS);
+  
+  const togglePlayback = useCallback(() => {
+    setIsPlaying(prev => !prev);
+  }, [setIsPlaying]);
+  
+  const addUserPlaylist = useCallback((playlistUrl, playlistName) => {
+    if (!playlistUrl || !playlistName) return;
+    
+    const newPlaylist = {
+      id: `playlist-${Date.now()}`,
+      name: playlistName,
+      url: playlistUrl
+    };
+    
+    setUserPlaylists(prev => [...prev, newPlaylist]);
+    return newPlaylist;
+  }, [setUserPlaylists]);
+  
+  const removeUserPlaylist = useCallback((playlistId) => {
+    setUserPlaylists(prev => prev.filter(p => p.id !== playlistId));
+    
+    // If removing current playlist, stop playback
+    if (currentPlaylist && currentPlaylist.id === playlistId) {
+      setIsPlaying(false);
+      setCurrentPlaylist(null);
+    }
+  }, [currentPlaylist, setIsPlaying, setCurrentPlaylist, setUserPlaylists]);
+  
+  const value = useMemo(() => ({
+    isPlaying,
+    currentPlaylist,
+    userPlaylists,
+    togglePlayback,
+    setCurrentPlaylist,
+    addUserPlaylist,
+    removeUserPlaylist
+  }), [isPlaying, currentPlaylist, userPlaylists, togglePlayback, setCurrentPlaylist, addUserPlaylist, removeUserPlaylist]);
+  
+  return (
+    <SpotifyContext.Provider value={value}>
+      {children}
+    </SpotifyContext.Provider>
+  );
+};
+
+// Hook to use theme context
+const useTheme = () => useContext(ThemeContext);
+
+// Hook to use spotify context
+const useSpotify = () => useContext(SpotifyContext);
+
+// Button component
+const Button = ({ 
+  onClick, 
+  disabled, 
+  className, 
+  size = "default", 
+  variant = "default", 
+  children,
+  ...props 
+}) => {
+  const { isDarkMode } = useTheme();
+  const baseClasses = "inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none";
+  
+  const sizeClasses = {
+    default: "h-10 py-2 px-4",
+    sm: "h-8 px-3 text-xs",
+    lg: "h-11 px-8"
+  };
+  
+  const variantClasses = {
+    default: isDarkMode 
+      ? "bg-blue-600 text-white hover:bg-blue-500" 
+      : "bg-blue-600 text-white hover:bg-blue-700",
+    secondary: isDarkMode 
+      ? "bg-gray-700 text-gray-100 hover:bg-gray-600" 
+      : "bg-gray-200 text-gray-900 hover:bg-gray-300",
+    outline: isDarkMode 
+      ? "border border-gray-600 bg-transparent text-gray-200 hover:bg-gray-800" 
+      : "border border-gray-300 bg-transparent text-gray-800 hover:bg-gray-100",
+    ghost: isDarkMode 
+      ? "bg-transparent text-gray-200 hover:bg-gray-800" 
+      : "bg-transparent text-gray-800 hover:bg-gray-100",
+    spotify: isDarkMode
+      ? "bg-green-600 text-white hover:bg-green-500"
+      : "bg-green-600 text-white hover:bg-green-700"
+  };
+  
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`${baseClasses} ${sizeClasses[size]} ${variantClasses[variant]} ${className || ''}`}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+};
+
+// Input component
+const Input = React.forwardRef(({ 
+  className,
+  onChange,
+  ...props
+}, ref) => {
+  const { isDarkMode } = useTheme();
+  
+  return (
+    <input
+      ref={ref}
+      onChange={onChange}
+      className={`flex h-10 w-full rounded-md border border-input px-3 py-2 text-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        isDarkMode 
+          ? 'bg-gray-800 border-gray-700 text-gray-100 focus-visible:ring-blue-400' 
+          : 'bg-white border-gray-300 text-gray-900 focus-visible:ring-blue-400'
+      } ${className}`}
+      {...props}
+    />
+  );
+});
+
+Input.displayName = "Input";
+
+// Progress component
+const Progress = ({ value, className, indicatorClassName }) => {
+  const { isDarkMode } = useTheme();
+  
+  return (
+    <div 
+      className={`h-2 w-full overflow-hidden rounded-full ${
+        isDarkMode ? 'bg-gray-700' : 'bg-gray-200'
+      } ${className || ''}`}
+    >
+      <div 
+        className={`h-full transition-all ${
+          value === 100 ? 'bg-green-500' : 'bg-blue-500'
+        } ${indicatorClassName || ''}`}
+        style={{ width: `${value}%` }}
+      />
+    </div>
+  );
+};
+
+// Card components
+const Card = ({ className, children }) => {
+  const { isDarkMode } = useTheme();
+  
+  return (
+    <div className={`rounded-lg border shadow-sm ${
+      isDarkMode 
+        ? 'bg-gray-800 border-gray-700 text-gray-100' 
+        : 'bg-white border-gray-200 text-gray-900'
+    } ${className || ''}`}>
+      {children}
+    </div>
+  );
+};
+
+const CardContent = ({ className, children }) => (
+  <div className={`p-6 ${className || ''}`}>
+    {children}
+  </div>
+);
+
+// Progress component specifically for habits
+const HabitProgress = ({ value }) => {
+  return <Progress value={value} />;
+};
+
+// Spotify Button component
+const SpotifyButton = () => {
+  const { isDarkMode } = useTheme();
+  const { isPlaying, togglePlayback, currentPlaylist, setCurrentPlaylist, userPlaylists } = useSpotify();
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [customUrl, setCustomUrl] = useState("");
+  const [customName, setCustomName] = useState("");
+  
+  const openModal = () => setIsModalOpen(true);
+  const closeModal = () => setIsModalOpen(false);
+  
+  const SpotifyLogo = () => (
+    <svg 
+      width="16" 
+      height="16" 
+      viewBox="0 0 16 16" 
+      fill="none" 
+      xmlns="http://www.w3.org/2000/svg"
+      className="mr-2"
+    >
+      <path d="M8 0C3.58 0 0 3.58 0 8C0 12.42 3.58 16 8 16C12.42 16 16 12.42 16 8C16 3.58 12.42 0 8 0ZM11.71 11.5C11.58 11.71 11.31 11.78 11.1 11.64C9.22 10.47 6.88 10.22 4.06 10.84C3.82 10.9 3.58 10.75 3.53 10.51C3.47 10.27 3.62 10.03 3.86 9.98C6.93 9.3 9.53 9.59 11.64 10.9C11.85 11.03 11.92 11.3 11.71 11.5ZM12.69 9.32C12.52 9.58 12.18 9.67 11.92 9.5C9.74 8.17 6.64 7.79 4 8.54C3.71 8.63 3.39 8.47 3.3 8.18C3.21 7.89 3.37 7.57 3.66 7.48C6.68 6.64 10.12 7.07 12.61 8.59C12.87 8.76 12.96 9.1 12.69 9.32ZM12.76 7.1C10.16 5.57 5.94 5.43 3.5 6.18C3.16 6.29 2.78 6.09 2.67 5.75C2.56 5.41 2.76 5.03 3.1 4.92C5.89 4.07 10.52 4.23 13.52 6.01C13.82 6.18 13.95 6.57 13.78 6.87C13.61 7.16 13.22 7.29 12.76 7.1Z" 
+        fill={isPlaying ? "#1DB954" : "currentColor"} 
+      />
+    </svg>
+  );
+  
+  const selectPlaylist = (playlist) => {
+    setCurrentPlaylist(playlist);
+    togglePlayback(); // Start playing when selecting a playlist
+    closeModal();
   };
 
   return (
+    <>
+      <Button
+        onClick={isPlaying ? togglePlayback : openModal}
+        variant={isPlaying ? "spotify" : "secondary"}
+        size="sm"
+        className={`fixed bottom-4 right-4 z-10 rounded-full shadow-lg px-4 py-2 flex items-center ${
+          isPlaying 
+            ? "animate-pulse" 
+            : ""
+        }`}
+      >
+        <SpotifyLogo />
+        {isPlaying ? (
+          <>
+            <span className="mr-2">{currentPlaylist?.name || "Music"}</span>
+            <Pause size={16} />
+          </>
+        ) : (
+          <>
+            <span>Play Music</span>
+            <Play size={16} className="ml-2" />
+          </>
+        )}
+      </Button>
+
+      {isModalOpen && (
+        <div className={`fixed inset-0 bg-black bg-opacity-50 z-20 flex items-center justify-center p-4`}>
+          <Card className="w-full max-w-md">
+            <CardContent>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-medium flex items-center">
+                  <SpotifyLogo /> Choose a Playlist
+                </h3>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={closeModal}
+                  className="text-gray-500"
+                >
+                  ✕
+                </Button>
+              </div>
+              
+              <div className="space-y-3 mb-6">
+                {userPlaylists.map(playlist => (
+                  <button
+                    key={playlist.id}
+                    onClick={() => selectPlaylist(playlist)}
+                    className={`w-full text-left px-4 py-3 rounded-lg transition-colors duration-200 flex items-center ${
+                      isDarkMode
+                        ? 'hover:bg-gray-700 focus:bg-gray-700'
+                        : 'hover:bg-gray-100 focus:bg-gray-100'
+                    }`}
+                  >
+                    <div className="bg-green-600 rounded-full p-2 mr-3">
+                      <Music size={16} className="text-white" />
+                    </div>
+                    <span>{playlist.name}</span>
+                  </button>
+                ))}
+              </div>
+              
+              <div className="border-t pt-4 mt-4">
+                <h4 className="text-sm font-medium mb-2">Add Custom Playlist</h4>
+                <div className="space-y-2">
+                  <Input 
+                    placeholder="Playlist Name" 
+                    value={customName}
+                    onChange={(e) => setCustomName(e.target.value)}
+                  />
+                  <Input 
+                    placeholder="Spotify URL or URI" 
+                    value={customUrl}
+                    onChange={(e) => setCustomUrl(e.target.value)}
+                  />
+                  <Button 
+                    variant="spotify" 
+                    className="w-full"
+                    disabled={!customUrl.trim() || !customName.trim()}
+                    onClick={() => {
+                      const playlist = {
+                        id: `playlist-${Date.now()}`,
+                        name: customName,
+                        url: customUrl
+                      };
+                      setCurrentPlaylist(playlist);
+                      setIsPlaying(true);
+                      closeModal();
+                    }}
+                  >
+                    Add & Play
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </>
+  );
+};
+
+// Empty state component
+const EmptyState = React.memo(() => {
+  const { isDarkMode } = useTheme();
+  return (
+    <div className={`text-center py-12 animate-fade-in transition-colors duration-300 ${
+      isDarkMode ? 'text-gray-400' : 'text-gray-500'
+    }`}>
+      <div className="mb-4">
+        <Plus size={48} className="mx-auto opacity-20" />
+      </div>
+      <h3 className="font-medium text-lg mb-2">No habits added yet</h3>
+      <p>Add your first habit to start tracking your progress!</p>
+    </div>
+  );
+});
+
+EmptyState.displayName = "EmptyState";
+
+// HabitItem component (replacing SortableHabitItem)
+const HabitItem = React.memo(({ 
+  habit, 
+  toggleHabit, 
+  deleteHabit, 
+  updateHabitName, 
+  quoteIndex, 
+  moveHabit,
+  index,
+  habitCount
+}) => {
+  const { isDarkMode } = useTheme();
+  const [isEditing, setIsEditing] = useState(false);
+  const [tempName, setTempName] = useState(habit.name);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isEditing]);
+
+  const handleEdit = useCallback(() => {
+    if (isEditing && tempName.trim()) {
+      setIsAnimating(true);
+      updateHabitName(habit.id, tempName);
+      setIsEditing(false);
+      setTimeout(() => setIsAnimating(false), 300);
+    } else {
+      setTempName(habit.name);
+      setIsEditing(true);
+    }
+  }, [isEditing, tempName, habit.id, habit.name, updateHabitName]);
+
+  const handleKeyDown = useCallback((e) => {
+    if (e.key === 'Enter') {
+      handleEdit();
+    } else if (e.key === 'Escape') {
+      setTempName(habit.name);
+      setIsEditing(false);
+    }
+  }, [handleEdit, habit.name]);
+
+  const handleToggle = useCallback(() => {
+    setIsAnimating(true);
+    toggleHabit(habit.id);
+    setTimeout(() => setIsAnimating(false), 500);
+  }, [toggleHabit, habit.id]);
+
+  const handleDelete = useCallback(() => {
+    setIsAnimating(true);
+    // Small delay to show animation before removal
+    setTimeout(() => deleteHabit(habit.id), 300);
+  }, [deleteHabit, habit.id]);
+
+  const handleMoveUp = useCallback(() => {
+    if (index > 0) {
+      moveHabit(index, index - 1);
+    }
+  }, [index, moveHabit]);
+
+  const handleMoveDown = useCallback(() => {
+    if (index < habitCount - 1) {
+      moveHabit(index, index + 1);
+    }
+  }, [index, habitCount, moveHabit]);
+
+  // Calculate what quote to show
+  const quote = QUOTES[quoteIndex % QUOTES.length];
+
+  return (
     <li
-      ref={setNodeRef}
-      style={style}
-      {...attributes}
-      className={`flex flex-col sm:flex-row sm:items-center justify-between px-4 py-3 rounded-xl transition-all duration-300 group ${
-        habit.done ? "bg-green-100 border border-green-200 text-green-900" : "bg-white border border-gray-300 hover:shadow-sm"
+      className={`flex flex-col sm:flex-row sm:items-center justify-between px-4 py-3 rounded-xl transition-all duration-300 ${
+        isAnimating ? 'animate-pulse' : ''
+      } ${
+        isDarkMode
+          ? (habit.done 
+              ? "bg-green-900 border border-green-700 text-green-100" 
+              : "bg-gray-800 border border-gray-700 hover:border-gray-600 text-gray-100"
+            ) 
+          : (habit.done 
+              ? "bg-green-100 border border-green-200 text-green-900" 
+              : "bg-white border border-gray-300 hover:shadow-sm text-gray-800"
+            )
       }`}
     >
       <div className="flex items-center w-full">
-        <button {...listeners} className="mr-3 text-gray-400 hover:text-gray-600">
-          <GripVertical size={18} />
-        </button>
+        <div className="flex flex-col mr-3">
+          <button 
+            type="button"
+            onClick={handleMoveUp}
+            disabled={index === 0}
+            className={`cursor-pointer transition-colors duration-200 ${
+              index === 0 ? 'opacity-30' : ''
+            } ${
+              isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-400 hover:text-gray-600'
+            }`}
+            aria-label="Move habit up"
+          >
+            <ChevronUp size={14} />
+          </button>
+          <button 
+            type="button"
+            onClick={handleMoveDown}
+            disabled={index === habitCount - 1}
+            className={`cursor-pointer transition-colors duration-200 ${
+              index === habitCount - 1 ? 'opacity-30' : ''
+            } ${
+              isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-400 hover:text-gray-600'
+            }`}
+            aria-label="Move habit down"
+          >
+            <ChevronDown size={14} />
+          </button>
+        </div>
         {isEditing ? (
           <Input
+            ref={inputRef}
             value={tempName}
             onChange={(e) => setTempName(e.target.value)}
-            onBlur={handleEdit}
-            className="text-sm sm:text-base font-medium mr-2"
-            autoFocus
+            onKeyDown={handleKeyDown}
+            onBlur={() => {
+              if (tempName.trim()) {
+                updateHabitName(habit.id, tempName);
+              }
+              setIsEditing(false);
+            }}
+            className={`text-sm sm:text-base font-medium mr-2 transition-colors duration-300 ${
+              isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white'
+            }`}
+            autoComplete="off"
           />
         ) : (
-          <span className="flex-grow truncate text-sm sm:text-base font-medium">
+          <span className="flex-grow truncate text-sm sm:text-base font-medium transition-all duration-300">
             {habit.name}
+            {habit.streak > 0 && (
+              <span className={`ml-2 text-xs font-semibold px-2 py-0.5 rounded-full transition-colors duration-300 ${
+                isDarkMode ? 'bg-amber-900 text-amber-100' : 'bg-orange-100 text-orange-700'
+              }`}>
+                {habit.streak} day{habit.streak > 1 ? 's' : ''}
+              </span>
+            )}
           </span>
         )}
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => toggleHabit(habit.id)}
-          className={`ml-4 rounded-full px-4 py-1 text-xs font-medium transition-colors ${
-            habit.done ? "bg-green-500 hover:bg-green-600 text-white" : "bg-indigo-500 hover:bg-indigo-600 text-white"
+          onClick={handleToggle}
+          className={`ml-auto rounded-full px-4 py-1 text-xs font-medium transition-all duration-300 ${
+            habit.done 
+              ? "bg-green-500 hover:bg-green-600 text-white transform hover:scale-105" 
+              : "bg-indigo-500 hover:bg-indigo-600 text-white transform hover:scale-105"
           }`}
         >
           {habit.done ? "✓" : "Mark"}
         </Button>
-        <button onClick={handleEdit} className="ml-2 text-blue-500 hover:text-blue-700">
-          <Pencil size={16} />
+        <button 
+          onClick={handleEdit} 
+          className={`ml-2 transition-all duration-300 transform hover:scale-110 ${
+            isDarkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-500 hover:text-blue-700'
+          }`}
+          aria-label={isEditing ? "Save habit name" : "Edit habit name"}
+        >
+          {isEditing ? <Save size={16} /> : <Pencil size={16} />}
         </button>
-        <button onClick={() => deleteHabit(habit.id)} className="ml-2 text-red-500 hover:text-red-700">
+        <button 
+          onClick={handleDelete} 
+          className={`ml-2 transition-all duration-300 transform hover:scale-110 ${
+            isDarkMode ? 'text-red-400 hover:text-red-300' : 'text-red-500 hover:text-red-700'
+          }`}
+          aria-label="Delete habit"
+        >
           <Trash2 size={16} />
         </button>
       </div>
-      <Progress value={habit.done ? 100 : 0} className="mt-2 sm:mt-0 sm:ml-10 h-2 bg-gray-200 w-full sm:w-1/3" />
-      {habit.done && <p className="mt-2 text-xs italic text-gray-500">{quote}</p>}
+      
+      <div className="w-full sm:w-1/3 mt-2 sm:mt-0 sm:ml-10">
+        <HabitProgress value={habit.done ? 100 : 0} />
+      </div>
+      
+      {habit.done && (
+        <p className={`mt-2 text-xs italic transition-colors duration-300 ${
+          isDarkMode ? 'text-gray-400' : 'text-gray-500'
+        }`}>
+          {quote}
+        </p>
+      )}
     </li>
   );
 });
 
-SortableHabitItem.displayName = "SortableHabitItem";
+HabitItem.displayName = "HabitItem";
 
-export default function HabitTracker() {
-  const [habits, setHabits] = useState(() => generateHabits(3));
+// Main HabitTracker component
+function HabitTracker() {
+  const [habits, setHabits] = useLocalStorage("habits", generateHabits(3));
   const [newHabitName, setNewHabitName] = useState("");
+  const inputRef = useRef(null);
+  
+  const { isDarkMode, toggleTheme } = useTheme();
+
+  // Check and update streaks
+  useEffect(() => {
+    const today = new Date().toDateString();
+    
+    setHabits(currentHabits => 
+      currentHabits.map(habit => {
+        // If completed today, update streak
+        if (habit.done && habit.lastCompleted !== today) {
+          return {
+            ...habit,
+            streak: habit.streak + 1,
+            lastCompleted: today
+          };
+        }
+        // If uncompleted and was completed before, check if streak should reset
+        else if (!habit.done && habit.lastCompleted) {
+          const lastCompletedDate = new Date(habit.lastCompleted);
+          const yesterday = new Date();
+          yesterday.setDate(yesterday.getDate() - 1);
+          
+          // If last completed is before yesterday, reset streak
+          if (lastCompletedDate < yesterday) {
+            return {
+              ...habit,
+              streak: 0
+            };
+          }
+        }
+        return habit;
+      })
+    );
+  }, [setHabits]);
+
+  // Reset habits completion status at midnight
+  useEffect(() => {
+    const checkDate = () => {
+      // Check if it's a new day
+      const now = new Date();
+      if (now.getHours() === 0 && now.getMinutes() === 0) {
+        setHabits(currentHabits => 
+          currentHabits.map(habit => ({
+            ...habit,
+            done: false
+          }))
+        );
+      }
+    };
+    
+    // Check every minute
+    const interval = setInterval(checkDate, 60000);
+    return () => clearInterval(interval);
+  }, [setHabits]);
 
   const toggleHabit = useCallback((id) => {
-    setHabits((prev) => prev.map(habit => habit.id === id ? { ...habit, done: !habit.done } : habit));
-  }, []);
+    const today = new Date().toDateString();
+    
+    setHabits(prev => prev.map(habit => 
+      habit.id === id ? {
+        ...habit,
+        done: !habit.done,
+        lastCompleted: !habit.done ? today : habit.lastCompleted,
+        streak: !habit.done ? (habit.streak + 1) : habit.streak
+      } : habit
+    ));
+  }, [setHabits]);
 
   const deleteHabit = useCallback((id) => {
-    setHabits((prev) => prev.filter((habit) => habit.id !== id));
-  }, []);
+    setHabits(prev => prev.filter(habit => habit.id !== id));
+  }, [setHabits]);
 
   const updateHabitName = useCallback((id, name) => {
-    setHabits((prev) => prev.map(habit => habit.id === id ? { ...habit, name } : habit));
-  }, []);
+    setHabits(prev => prev.map(habit => 
+      habit.id === id ? { ...habit, name: name.trim() } : habit
+    ));
+  }, [setHabits]);
+
+  // Move habit from one position to another
+  const moveHabit = useCallback((fromIndex, toIndex) => {
+    setHabits(prev => {
+      const result = [...prev];
+      const [removed] = result.splice(fromIndex, 1);
+      result.splice(toIndex, 0, removed);
+      return result;
+    });
+  }, [setHabits]);
 
   const addHabit = useCallback(() => {
     if (!newHabitName.trim()) return;
+    
     const newHabit = {
-      id: crypto.randomUUID(),
-      name: newHabitName,
-      done: false
+      id: `habit-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      name: newHabitName.trim(),
+      done: false,
+      streak: 0,
+      lastCompleted: null,
+      priority: habits.length // Set priority based on position
     };
-    setHabits((prev) => [...prev, newHabit]);
+    
+    setHabits(prev => [...prev, newHabit]);
     setNewHabitName("");
-  }, [newHabitName]);
-
-  const handleDragEnd = useCallback(({ active, over }) => {
-    if (active.id !== over?.id) {
-      const oldIndex = habits.findIndex((h) => h.id === active.id);
-      const newIndex = habits.findIndex((h) => h.id === over?.id);
-      if (oldIndex !== -1 && newIndex !== -1) {
-        setHabits((items) => arrayMove(items, oldIndex, newIndex));
-      }
+    
+    // Focus back on input for quick consecutive additions
+    if (inputRef.current) {
+      inputRef.current.focus();
     }
-  }, [habits]);
+  }, [newHabitName, setHabits, habits.length]);
 
-  const completedCount = useMemo(() => habits.filter(h => h.done).length, [habits]);
-  const progress = useMemo(() => habits.length ? (completedCount / habits.length) * 100 : 0, [completedCount, habits.length]);
-
-  return (
-    <div className="min-h-screen bg-neutral-50 text-gray-800 p-4">
-      <div className="max-w-2xl mx-auto mt-12">
-        <Card className="rounded-3xl shadow-md border border-gray-200">
-          <CardContent className="p-6">
-            <div className="text-center mb-6">
-              <h1 className="text-3xl font-semibold text-gray-700">My Habits</h1>
-              <Progress value={progress} className="mt-4 h-3 bg-gray-200" />
-              <p className="mt-2 text-sm text-gray-500">
-                {completedCount}/{habits.length} completed today
-              </p>
-              <div className="flex items-center justify-center gap-2 mt-4">
-                <Input
-                  placeholder="Add new habit"
-                  value={newHabitName}
-                  onChange={(e) => setNewHabitName(e.target.value)}
-                  className="w-full max-w-xs"
-                />
-                <Button onClick={addHabit} className="flex gap-1">
-                  <Plus size={16} /> Add
-                </Button>
-              </div>
-            </div>
-
-            <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-              <SortableContext items={habits.map((h) => h.id)} strategy={verticalListSortingStrategy}>
-                <ul className="space-y-3 max-h-[65vh] overflow-y-auto pr-2">
-                  {habits.map((habit, index) => (
-                    <SortableHabitItem
-                      key={habit.id}
-                      habit={habit}
-                      toggleHabit={toggleHabit}
-                      deleteHabit={deleteHabit}
-                      updateHabitName={updateHabitName}
-                      quote={quotes[index % quotes.length]}
-                    />
-                  ))}
-                </ul>
-              </SortableContext>
-            </DndContext>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
+  const handleKeyDown = useCallback((e) => {
+    if (e.key === 'Enter') {
+      addHabit();
