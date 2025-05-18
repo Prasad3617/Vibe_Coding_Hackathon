@@ -1,65 +1,174 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { GripVertical, Trash2, Plus, Pencil } from "lucide-react";
+import { DndContext, closestCenter } from '@dnd-kit/core';
+import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
-// Generate 100 habits for stress testing
+const quotes = [
+  "Consistency is the key to success.",
+  "Small steps every day lead to big results.",
+  "Discipline is choosing between what you want now and what you want most.",
+  "Habits define who we are.",
+  "Progress, not perfection.",
+  "Your future is created by what you do today."
+];
+
 const generateHabits = (count) =>
-  Array.from({ length: count }, (_, i) => ({ id: i, name: `Habit ${i + 1}`, done: false }));
+  Array.from({ length: count }, (_, i) => ({ id: crypto.randomUUID(), name: `Habit ${i + 1}`, done: false }));
 
-export default function HabitTracker() {
-  const [habits, setHabits] = useState(() => generateHabits(100));
+const SortableHabitItem = React.memo(({ habit, toggleHabit, deleteHabit, updateHabitName, quote }) => {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: habit.id });
 
-  const toggleHabit = useCallback((id) => {
-    setHabits((prev) =>
-      prev.map((habit) =>
-        habit.id === id ? { ...habit, done: !habit.done } : habit
-      )
-    );
-  }, []);
+  const style = useMemo(() => ({
+    transform: CSS.Transform.toString(transform),
+    transition,
+  }), [transform, transition]);
 
-  const completed = useMemo(() => habits.filter((h) => h.done).length, [habits]);
-  const progress = useMemo(() => (completed / habits.length) * 100, [completed, habits.length]);
+  const [isEditing, setIsEditing] = useState(false);
+  const [tempName, setTempName] = useState(habit.name);
+
+  const handleEdit = () => {
+    if (isEditing && tempName.trim()) {
+      updateHabitName(habit.id, tempName);
+    }
+    setIsEditing(!isEditing);
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-100 to-purple-200 p-4">
-      <div className="max-w-3xl mx-auto mt-10">
-        <Card className="rounded-2xl shadow-xl">
+    <li
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      className={`flex flex-col sm:flex-row sm:items-center justify-between px-4 py-3 rounded-xl transition-all duration-300 group ${
+        habit.done ? "bg-green-100 border border-green-200 text-green-900" : "bg-white border border-gray-300 hover:shadow-sm"
+      }`}
+    >
+      <div className="flex items-center w-full">
+        <button {...listeners} className="mr-3 text-gray-400 hover:text-gray-600">
+          <GripVertical size={18} />
+        </button>
+        {isEditing ? (
+          <Input
+            value={tempName}
+            onChange={(e) => setTempName(e.target.value)}
+            onBlur={handleEdit}
+            className="text-sm sm:text-base font-medium mr-2"
+            autoFocus
+          />
+        ) : (
+          <span className="flex-grow truncate text-sm sm:text-base font-medium">
+            {habit.name}
+          </span>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => toggleHabit(habit.id)}
+          className={`ml-4 rounded-full px-4 py-1 text-xs font-medium transition-colors ${
+            habit.done ? "bg-green-500 hover:bg-green-600 text-white" : "bg-indigo-500 hover:bg-indigo-600 text-white"
+          }`}
+        >
+          {habit.done ? "✓" : "Mark"}
+        </Button>
+        <button onClick={handleEdit} className="ml-2 text-blue-500 hover:text-blue-700">
+          <Pencil size={16} />
+        </button>
+        <button onClick={() => deleteHabit(habit.id)} className="ml-2 text-red-500 hover:text-red-700">
+          <Trash2 size={16} />
+        </button>
+      </div>
+      <Progress value={habit.done ? 100 : 0} className="mt-2 sm:mt-0 sm:ml-10 h-2 bg-gray-200 w-full sm:w-1/3" />
+      {habit.done && <p className="mt-2 text-xs italic text-gray-500">{quote}</p>}
+    </li>
+  );
+});
+
+SortableHabitItem.displayName = "SortableHabitItem";
+
+export default function HabitTracker() {
+  const [habits, setHabits] = useState(() => generateHabits(3));
+  const [newHabitName, setNewHabitName] = useState("");
+
+  const toggleHabit = useCallback((id) => {
+    setHabits((prev) => prev.map(habit => habit.id === id ? { ...habit, done: !habit.done } : habit));
+  }, []);
+
+  const deleteHabit = useCallback((id) => {
+    setHabits((prev) => prev.filter((habit) => habit.id !== id));
+  }, []);
+
+  const updateHabitName = useCallback((id, name) => {
+    setHabits((prev) => prev.map(habit => habit.id === id ? { ...habit, name } : habit));
+  }, []);
+
+  const addHabit = useCallback(() => {
+    if (!newHabitName.trim()) return;
+    const newHabit = {
+      id: crypto.randomUUID(),
+      name: newHabitName,
+      done: false
+    };
+    setHabits((prev) => [...prev, newHabit]);
+    setNewHabitName("");
+  }, [newHabitName]);
+
+  const handleDragEnd = useCallback(({ active, over }) => {
+    if (active.id !== over?.id) {
+      const oldIndex = habits.findIndex((h) => h.id === active.id);
+      const newIndex = habits.findIndex((h) => h.id === over?.id);
+      if (oldIndex !== -1 && newIndex !== -1) {
+        setHabits((items) => arrayMove(items, oldIndex, newIndex));
+      }
+    }
+  }, [habits]);
+
+  const completedCount = useMemo(() => habits.filter(h => h.done).length, [habits]);
+  const progress = useMemo(() => habits.length ? (completedCount / habits.length) * 100 : 0, [completedCount, habits.length]);
+
+  return (
+    <div className="min-h-screen bg-neutral-50 text-gray-800 p-4">
+      <div className="max-w-2xl mx-auto mt-12">
+        <Card className="rounded-3xl shadow-md border border-gray-200">
           <CardContent className="p-6">
-            <h1 className="text-2xl font-bold mb-4 text-center text-indigo-700">
-              Daily Habit Checklist
-            </h1>
+            <div className="text-center mb-6">
+              <h1 className="text-3xl font-semibold text-gray-700">My Habits</h1>
+              <Progress value={progress} className="mt-4 h-3 bg-gray-200" />
+              <p className="mt-2 text-sm text-gray-500">
+                {completedCount}/{habits.length} completed today
+              </p>
+              <div className="flex items-center justify-center gap-2 mt-4">
+                <Input
+                  placeholder="Add new habit"
+                  value={newHabitName}
+                  onChange={(e) => setNewHabitName(e.target.value)}
+                  className="w-full max-w-xs"
+                />
+                <Button onClick={addHabit} className="flex gap-1">
+                  <Plus size={16} /> Add
+                </Button>
+              </div>
+            </div>
 
-            <Progress value={progress} className="mb-4 h-4" />
-            <p className="text-center mb-4 text-sm text-gray-500">
-              {completed}/{habits.length} habits completed
-            </p>
-
-            <ul className="grid sm:grid-cols-2 gap-3 max-h-[70vh] overflow-y-auto">
-              {habits.map((habit) => (
-                <li
-                  key={habit.id}
-                  className={`flex items-center justify-between px-4 py-2 rounded-xl transition-all duration-300 ${
-                    habit.done
-                      ? "bg-green-200 text-green-900"
-                      : "bg-white text-gray-700 border border-gray-300"
-                  }`}
-                >
-                  <span className="truncate max-w-[70%]">{habit.name}</span>
-                  <Button
-                    size="sm"
-                    onClick={() => toggleHabit(habit.id)}
-                    className={`ml-4 rounded-xl px-3 py-1 text-xs ${
-                      habit.done
-                        ? "bg-green-600 hover:bg-green-700 text-white"
-                        : "bg-indigo-600 hover:bg-indigo-700 text-white"
-                    }`}
-                  >
-                    {habit.done ? "Done" : "Mark"}
-                  </Button>
-                </li>
-              ))}
-            </ul>
+            <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={habits.map((h) => h.id)} strategy={verticalListSortingStrategy}>
+                <ul className="space-y-3 max-h-[65vh] overflow-y-auto pr-2">
+                  {habits.map((habit, index) => (
+                    <SortableHabitItem
+                      key={habit.id}
+                      habit={habit}
+                      toggleHabit={toggleHabit}
+                      deleteHabit={deleteHabit}
+                      updateHabitName={updateHabitName}
+                      quote={quotes[index % quotes.length]}
+                    />
+                  ))}
+                </ul>
+              </SortableContext>
+            </DndContext>
           </CardContent>
         </Card>
       </div>
