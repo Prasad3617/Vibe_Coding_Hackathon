@@ -1,0 +1,68 @@
+import React, { useCallback, useMemo, useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+
+// Generate 100 habits for stress testing
+const generateHabits = (count) =>
+  Array.from({ length: count }, (_, i) => ({ id: i, name: `Habit ${i + 1}`, done: false }));
+
+export default function HabitTracker() {
+  const [habits, setHabits] = useState(() => generateHabits(100));
+
+  const toggleHabit = useCallback((id) => {
+    setHabits((prev) =>
+      prev.map((habit) =>
+        habit.id === id ? { ...habit, done: !habit.done } : habit
+      )
+    );
+  }, []);
+
+  const completed = useMemo(() => habits.filter((h) => h.done).length, [habits]);
+  const progress = useMemo(() => (completed / habits.length) * 100, [completed, habits.length]);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-100 to-purple-200 p-4">
+      <div className="max-w-3xl mx-auto mt-10">
+        <Card className="rounded-2xl shadow-xl">
+          <CardContent className="p-6">
+            <h1 className="text-2xl font-bold mb-4 text-center text-indigo-700">
+              Daily Habit Checklist
+            </h1>
+
+            <Progress value={progress} className="mb-4 h-4" />
+            <p className="text-center mb-4 text-sm text-gray-500">
+              {completed}/{habits.length} habits completed
+            </p>
+
+            <ul className="grid sm:grid-cols-2 gap-3 max-h-[70vh] overflow-y-auto">
+              {habits.map((habit) => (
+                <li
+                  key={habit.id}
+                  className={`flex items-center justify-between px-4 py-2 rounded-xl transition-all duration-300 ${
+                    habit.done
+                      ? "bg-green-200 text-green-900"
+                      : "bg-white text-gray-700 border border-gray-300"
+                  }`}
+                >
+                  <span className="truncate max-w-[70%]">{habit.name}</span>
+                  <Button
+                    size="sm"
+                    onClick={() => toggleHabit(habit.id)}
+                    className={`ml-4 rounded-xl px-3 py-1 text-xs ${
+                      habit.done
+                        ? "bg-green-600 hover:bg-green-700 text-white"
+                        : "bg-indigo-600 hover:bg-indigo-700 text-white"
+                    }`}
+                  >
+                    {habit.done ? "Done" : "Mark"}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
